@@ -1,0 +1,6 @@
+[package]
+name = "highlight-ranges-interview-question"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
