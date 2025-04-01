@@ -1,6 +1,18 @@
 #![allow(unused, dead_code)]
 
-use std::fmt::format;
+use std::{fmt::format, usize};
+
+#[derive(Debug, PartialEq, Eq)]
+enum HighlightingBoundry {
+    Start, // <em>
+    End,   // </em>
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum HighlightingError {
+    OverlappingRanges,
+    RangesOutOfBounds,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct HighlightRange {
@@ -11,8 +23,8 @@ struct HighlightRange {
 }
 
 impl HighlightRange {
-    /// lower = exclusive, upper = inclusive, swaps upper and lower if necessary
-    fn new(lower: u32, upper: u32) -> HighlightRange {
+    /// lower = inclusive, upper = exclusive, swaps upper and lower if necessary
+    fn new(lower: u32, upper: u32) -> Self {
         if lower < upper {
             HighlightRange { lower, upper }
         } else {
@@ -22,32 +34,6 @@ impl HighlightRange {
             }
         }
     }
-}
-
-#[derive(Debug, PartialEq, Eq)]
-enum RangeMatch {
-    Open,
-    Close,
-    Both,
-    None,
-}
-
-fn check_match(idx: u32, highlights: &Vec<HighlightRange>) -> RangeMatch {
-    let open = highlights.iter().any(|h| h.lower == (idx as u32));
-    let close = highlights.iter().any(|h| h.upper == (idx as u32));
-
-    match (open, close) {
-        (true, true) => RangeMatch::Both,
-        (true, false) => RangeMatch::Open,
-        (false, true) => RangeMatch::Close,
-        (false, false) => RangeMatch::None,
-    }
-}
-
-#[derive(Debug, PartialEq, Eq)]
-enum HighlightingError {
-    OverlappingRanges,
-    RangesOutOfBounds,
 }
 
 fn validate_ranges(
@@ -72,36 +58,56 @@ fn validate_ranges(
     Ok(())
 }
 
+#[derive(Debug, Default)]
+struct FoldState<'a> {
+    out: String,       // mutable output
+    offset: usize,     // mutable offset
+    original: &'a str, // original input text
+}
+
+impl<'a> From<&'a str> for FoldState<'a> {
+    fn from(value: &'a str) -> Self {
+        FoldState {
+            out: String::new(),
+            offset: 0,
+            original: value,
+        }
+    }
+}
+
 fn highlight_text(
     input: &str,
     highlights: Vec<HighlightRange>,
 ) -> Result<String, HighlightingError> {
     validate_ranges(input.len(), &highlights)?;
 
-    let input = [input, " "].concat(); // mitigate last character issue by adding an empty
-    // space which is trimmed out in the end
-    let out = input
-        .chars()
-        .enumerate()
-        .map(|(idx, c)| {
-            let range_match = check_match(idx as u32, &highlights);
-
-            if range_match != RangeMatch::None {
-                println!("{idx}: '{c}'");
-            }
-
-            match range_match {
-                RangeMatch::Open => format!("<em>{c}"),
-                RangeMatch::Close => format!("</em>{c}"),
-                RangeMatch::Both | RangeMatch::None => c.to_string(),
-            }
+    let mut highlights = highlights
+        .iter()
+        .flat_map(|hr| {
+            [
+                (hr.lower as usize, HighlightingBoundry::Start),
+                (hr.upper as usize, HighlightingBoundry::End),
+            ]
         })
-        .collect::<Vec<String>>()
-        .join("")
-        .trim()
-        .to_string();
+        .collect::<Vec<(usize, HighlightingBoundry)>>();
 
-    Ok(out)
+    highlights.sort_by_key(|(idx, _)| *idx);
+
+    let out = highlights.iter().fold(
+        FoldState::from(input),
+        |mut state, (next_high_pos, next_high_kind)| {
+            let next: &str = &state.original[state.offset..*next_high_pos];
+            state.out += next;
+            state.out += match next_high_kind {
+                HighlightingBoundry::Start => "<em>",
+                HighlightingBoundry::End => "</em>",
+            };
+            state.offset = *next_high_pos;
+            state
+        },
+    );
+
+    Ok(out.out + &input[out.offset..])
 }
 
 #[cfg(test)]
@@ -139,14 +145,14 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!("<em>Hello world</em>", actual);
+        assert_eq!("<em>Hello</em><em> world</em>", actual);
     }
 
     #[test]
     fn should_return_err_invalid_ranges() {
         let actual = highlight_text(
             "Hello world",
-            vec![HighlightRange::new(0, 5), HighlightRange::new(3, 11)],
+            vec![HighlightRange::new(0, 5), HighlightRange::new(4, 11)],
         );
 
         assert_eq!(Err(HighlightingError::OverlappingRanges), actual);
